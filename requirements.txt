@@ -1,0 +1,5 @@
+streamlit>=1.40
+pandas
+sqlalchemy>=2.0
+openpyxl
+pymysql
