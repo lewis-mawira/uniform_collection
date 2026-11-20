@@ -33,12 +33,21 @@ st.set_page_config(
 
 
 def get_db_url() -> str:
+    url = None
     try:
         if "DATABASE_URL" in st.secrets:
-            return st.secrets["DATABASE_URL"]
+            url = st.secrets["DATABASE_URL"]
     except Exception:
         pass
-    return os.getenv("DATABASE_URL", "sqlite:///children.db")
+    if not url:
+        url = os.getenv("DATABASE_URL", "sqlite:///children.db")
+
+    # Always use the psycopg (v3) driver for Postgres, whatever prefix was pasted
+    for prefix in ("postgresql+psycopg2://", "postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            url = "postgresql+psycopg://" + url[len(prefix):]
+            break
+    return url
 
 
 metadata = MetaData()
