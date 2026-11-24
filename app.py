@@ -1,5 +1,8 @@
+import hmac
 import json
 import os
+import re
+import time
 from datetime import datetime
 from io import BytesIO
 
@@ -14,34 +17,37 @@ from sqlalchemy import (
     Table,
     Text,
     create_engine,
+    inspect,
     select,
+    text,
 )
 
 st.set_page_config(
-    page_title="Children Data Collection",
+    page_title="Brian Kathurima | Children Data Collection",
     page_icon=":material/child_care:",
     layout="wide",
 )
 
 # ---------------------------------------------------------------------------
-# Database
+# Settings (secrets)
 # ---------------------------------------------------------------------------
-# Set DATABASE_URL to point at your database. Examples:
-#   MySQL:      mysql+pymysql://user:password@host:3306/dbname
-#   PostgreSQL: postgresql+psycopg2://user:password@host:5432/dbname
-# If it is not set, a local SQLite file (children.db) is used.
+# Add these to .streamlit/secrets.toml (or the Secrets box on Streamlit Cloud):
+#   DATABASE_URL = "postgresql://user:password@host:5432/postgres"
+#   APP_USERNAME = "choose-a-username"
+#   APP_PASSWORD = "choose-a-strong-password"
+
+
+def get_secret(name: str, default=None):
+    try:
+        if name in st.secrets:
+            return st.secrets[name]
+    except Exception:
+        pass
+    return os.getenv(name, default)
 
 
 def get_db_url() -> str:
-    url = None
-    try:
-        if "DATABASE_URL" in st.secrets:
-            url = st.secrets["DATABASE_URL"]
-    except Exception:
-        pass
-    if not url:
-        url = os.getenv("DATABASE_URL", "sqlite:///children.db")
-
+    url = get_secret("DATABASE_URL", "sqlite:///children.db")
     # Always use the psycopg (v3) driver for Postgres, whatever prefix was pasted
     for prefix in ("postgresql+psycopg2://", "postgresql://", "postgres://"):
         if url.startswith(prefix):
@@ -50,6 +56,115 @@ def get_db_url() -> str:
     return url
 
 
+# ---------------------------------------------------------------------------
+# Heading and styling
+# ---------------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    .block-container { padding-top: 1.5rem; max-width: 1100px; }
+    .banner {
+        background: #0f5132;
+        color: #ffffff;
+        border-radius: 14px;
+        padding: 1.6rem 1.8rem;
+        margin-bottom: 1.25rem;
+        text-align: center;
+    }
+    .banner .name {
+        font-size: clamp(2rem, 6vw, 3.4rem);
+        font-weight: 800;
+        line-height: 1.05;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        margin: 0;
+    }
+    .banner .role {
+        font-size: clamp(1rem, 3vw, 1.5rem);
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        margin-top: 0.55rem;
+        color: #d1e7dd;
+    }
+    .banner .sub {
+        display: inline-flex; align-items: center; gap: 8px;
+        margin-top: 0.9rem; font-size: 0.95rem; opacity: 0.9;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Lucide "users" icon, inline so it follows the banner colour
+LUCIDE_USERS = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" '
+    'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+    'stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>'
+    '<circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>'
+    '<path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>'
+)
+
+st.markdown(
+    f"""
+    <div class="banner">
+        <div class="name">Brian Kathurima</div>
+        <div class="role">MCA Aspirant | Abo Central Ward 2027</div>
+        <div class="sub">{LUCIDE_USERS}<span>Children Data Collection</span></div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ---------------------------------------------------------------------------
+# Login
+# ---------------------------------------------------------------------------
+
+
+def login_page():
+    expected_user = get_secret("APP_USERNAME")
+    expected_pass = get_secret("APP_PASSWORD")
+
+    if not expected_user or not expected_pass:
+        st.error(
+            "Login is not set up yet. Add APP_USERNAME and APP_PASSWORD to the app secrets.",
+            icon=":material/lock:",
+        )
+        return
+
+    _, mid, _ = st.columns([1, 1.2, 1])
+    with mid:
+        with st.form("login_form"):
+            st.markdown("#### Sign in")
+            username = st.text_input("Username", icon=":material/person:")
+            password = st.text_input("Password", type="password", icon=":material/key:")
+            go = st.form_submit_button("Sign in", icon=":material/login:", type="primary", use_container_width=True)
+
+        if go:
+            ok_user = hmac.compare_digest(username.strip().encode(), str(expected_user).encode())
+            ok_pass = hmac.compare_digest(password.encode(), str(expected_pass).encode())
+            if ok_user and ok_pass:
+                st.session_state["auth"] = True
+                st.rerun()
+            else:
+                time.sleep(1.5)  # slows down guessing
+                st.error("Incorrect username or password.", icon=":material/error:")
+
+
+if not st.session_state.get("auth"):
+    login_page()
+    st.stop()
+
+# Signed in: small sign out button
+_, out_col = st.columns([6, 1])
+with out_col:
+    if st.button("Sign out", icon=":material/logout:", use_container_width=True):
+        st.session_state["auth"] = False
+        st.rerun()
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
 metadata = MetaData()
 
 children = Table(
@@ -57,7 +172,9 @@ children = Table(
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("parent_name", String(150), nullable=False),
+    Column("parent_contact", String(50), nullable=True),
     Column("child_name", String(150), nullable=False),
+    Column("gender", String(20), nullable=True),
     Column("age", Integer, nullable=False),
     Column("grade", String(50), nullable=False),
     Column("school", String(200), nullable=False),
@@ -76,10 +193,21 @@ custom_fields = Table(
 )
 
 
+def ensure_columns(engine):
+    """Adds the gender and parent_contact columns if the table already exists without them."""
+    existing = {c["name"] for c in inspect(engine).get_columns("children")}
+    wanted = {"parent_contact": "VARCHAR(50)", "gender": "VARCHAR(20)"}
+    with engine.begin() as conn:
+        for name, ddl in wanted.items():
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE children ADD COLUMN {name} {ddl}"))
+
+
 @st.cache_resource
 def get_engine():
     engine = create_engine(get_db_url(), pool_pre_ping=True)
     metadata.create_all(engine)
+    ensure_columns(engine)
     return engine
 
 
@@ -91,11 +219,23 @@ GRADES = (
     + ["Other"]
 )
 
+GENDERS = ["Male", "Female"]
 FIELD_TYPES = ["Text", "Number", "Date", "Dropdown"]
+BUILT_IN_NAMES = {
+    "id", "parent name", "parent contact", "child name",
+    "gender", "age", "grade", "school", "date added",
+}
 
 # ---------------------------------------------------------------------------
-# Data helpers
+# Helpers
 # ---------------------------------------------------------------------------
+
+
+def clean_phone(raw: str):
+    """Returns a phone number as 07XXXXXXXX or 01XXXXXXXX, or None if it is not valid."""
+    p = re.sub(r"[\s\-()]", "", raw or "")
+    m = re.fullmatch(r"(?:\+?254|0)([71]\d{8})", p)
+    return "0" + m.group(1) if m else None
 
 
 def load_custom_fields():
@@ -112,7 +252,9 @@ def load_children_df() -> pd.DataFrame:
         rec = {
             "ID": r["id"],
             "Parent name": r["parent_name"],
+            "Parent contact": r["parent_contact"],
             "Child name": r["child_name"],
+            "Gender": r["gender"],
             "Age": r["age"],
             "Grade": r["grade"],
             "School": r["school"],
@@ -125,7 +267,10 @@ def load_children_df() -> pd.DataFrame:
         rec["Date added"] = r["created_at"].strftime("%Y-%m-%d %H:%M") if r["created_at"] else ""
         records.append(rec)
 
-    base_cols = ["ID", "Parent name", "Child name", "Age", "Grade", "School", "Date added"]
+    base_cols = [
+        "ID", "Parent name", "Parent contact", "Child name", "Gender",
+        "Age", "Grade", "School", "Date added",
+    ]
     df = pd.DataFrame(records)
     if df.empty:
         return pd.DataFrame(columns=base_cols)
@@ -142,36 +287,6 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
             ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = min(longest + 3, 45)
     return buffer.getvalue()
 
-
-# ---------------------------------------------------------------------------
-# Styling
-# ---------------------------------------------------------------------------
-st.markdown(
-    """
-    <style>
-    .block-container { padding-top: 2rem; max-width: 1100px; }
-    .app-title { display: flex; align-items: center; gap: 12px; margin-bottom: 0.25rem; }
-    .app-title h1 { margin: 0; font-size: 1.75rem; font-weight: 600; }
-    .app-sub { opacity: 0.7; margin-bottom: 1.25rem; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# Lucide "users" icon, inline so it follows the theme colour
-LUCIDE_USERS = (
-    '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" '
-    'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" '
-    'stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>'
-    '<circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>'
-    '<path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>'
-)
-
-st.markdown(
-    f'<div class="app-title">{LUCIDE_USERS}<h1>Children Data Collection</h1></div>'
-    '<div class="app-sub">Record parent and child details, then export them to Excel.</div>',
-    unsafe_allow_html=True,
-)
 
 fields = load_custom_fields()
 
@@ -190,11 +305,15 @@ with tab_add:
     with st.form("child_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
         parent_name = c1.text_input("Parent name", placeholder="e.g. Jane Wanjiru")
-        child_name = c2.text_input("Child name", placeholder="e.g. Brian Mwangi")
+        parent_contact = c2.text_input("Parent contact", placeholder="e.g. 0712345678")
 
         c3, c4 = st.columns(2)
-        age = c3.number_input("Age", min_value=0, max_value=25, value=None, step=1, placeholder="Enter age")
-        grade = c4.selectbox("Grade", GRADES, index=None, placeholder="Select grade")
+        child_name = c3.text_input("Child name", placeholder="e.g. Brian Mwangi")
+        gender = c4.selectbox("Gender", GENDERS, index=None, placeholder="Select gender")
+
+        c5, c6 = st.columns(2)
+        age = c5.number_input("Age", min_value=0, max_value=25, value=None, step=1, placeholder="Enter age")
+        grade = c6.selectbox("Grade", GRADES, index=None, placeholder="Select grade")
 
         school = st.text_input("School", placeholder="e.g. Nairobi Primary School")
 
@@ -218,10 +337,17 @@ with tab_add:
 
     if submitted:
         errors = []
+        phone = clean_phone(parent_contact)
         if not parent_name.strip():
             errors.append("Parent name is required.")
+        if not parent_contact.strip():
+            errors.append("Parent contact is required.")
+        elif phone is None:
+            errors.append("Enter a valid phone number, for example 0712345678.")
         if not child_name.strip():
             errors.append("Child name is required.")
+        if gender is None:
+            errors.append("Gender is required.")
         if age is None:
             errors.append("Age is required.")
         if grade is None:
@@ -250,7 +376,9 @@ with tab_add:
                 conn.execute(
                     children.insert().values(
                         parent_name=parent_name.strip(),
+                        parent_contact=phone,
                         child_name=child_name.strip(),
+                        gender=gender,
                         age=int(age),
                         grade=grade,
                         school=school.strip(),
@@ -272,7 +400,7 @@ with tab_records:
     m3.metric("Schools", df["School"].nunique() if not df.empty else 0)
 
     f1, f2 = st.columns([2, 1])
-    search = f1.text_input("Search", placeholder="Search by parent, child or school", icon=":material/search:")
+    search = f1.text_input("Search", placeholder="Search by parent, child, contact or school", icon=":material/search:")
     school_filter = f2.selectbox(
         "School",
         ["All schools"] + (sorted(df["School"].dropna().unique().tolist()) if not df.empty else []),
@@ -318,7 +446,7 @@ with tab_records:
 # Tab 3: Form fields (add extra fields)
 # ---------------------------------------------------------------------------
 with tab_fields:
-    st.markdown("Add extra fields to the form, for example **Gender**, **Admission number** or **Phone number**.")
+    st.markdown("Add extra fields to the form, for example **Admission number** or **Home village**.")
 
     with st.form("field_form", clear_on_submit=True):
         n1, n2 = st.columns(2)
@@ -326,7 +454,7 @@ with tab_fields:
         new_type = n2.selectbox("Field type", FIELD_TYPES)
         new_options = st.text_input(
             "Dropdown options",
-            placeholder="Separate with commas, e.g. Male, Female",
+            placeholder="Separate with commas, e.g. Day, Boarding",
             help="Only used when the field type is Dropdown.",
         )
         new_required = st.checkbox("Required")
@@ -334,9 +462,7 @@ with tab_fields:
 
     if add_field:
         name = new_name.strip()
-        existing = {f["name"].lower() for f in fields} | {
-            "parent name", "child name", "age", "grade", "school", "id", "date added"
-        }
+        existing = {f["name"].lower() for f in fields} | BUILT_IN_NAMES
         if not name:
             st.error("Field name is required.", icon=":material/error:")
         elif name.lower() in existing:
